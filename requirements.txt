@@ -1,0 +1,5 @@
+# Async HTTP library for network requests.
+aiohttp>=3.9.0
+
+# Loads environment variables from a .env file.
+python-dotenv>=1.0.0
