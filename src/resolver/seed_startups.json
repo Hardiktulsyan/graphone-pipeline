@@ -1,0 +1,202 @@
+[
+  {
+    "canonical": "OpenAI",
+    "aliases": ["OpenAI, Inc.", "Open AI", "openai", "OpenAI LP"]
+  },
+  {
+    "canonical": "Anthropic",
+    "aliases": ["Anthropic PBC", "Anthropic, Inc.", "anthropic"]
+  },
+  {
+    "canonical": "Mistral AI",
+    "aliases": ["Mistral", "Mistral AI SAS", "mistralai"]
+  },
+  {
+    "canonical": "Cohere",
+    "aliases": ["Cohere Inc.", "Cohere AI", "cohere"]
+  },
+  {
+    "canonical": "Perplexity AI",
+    "aliases": ["Perplexity", "Perplexity AI, Inc.", "perplexity"]
+  },
+  {
+    "canonical": "Scale AI",
+    "aliases": [ "Scale AI, Inc.", "scaleai"]
+  },
+  {
+    "canonical": "Hugging Face",
+    "aliases": ["Hugging Face, Inc.",  "huggingface"]
+  },
+  {
+    "canonical": "Runway",
+    "aliases": ["RunwayML", "Runway ML", "Runway AI, Inc."]
+  },
+  {
+    "canonical": "Midjourney",
+    "aliases": ["Midjourney, Inc.", "Mid Journey", "midjourney"]
+  },
+  {
+    "canonical": "Stability AI",
+    "aliases": ["Stability", "Stability AI Ltd", "stabilityai"]
+  },
+  {
+    "canonical": "Databricks",
+    "aliases": ["Databricks, Inc.", "Data Bricks", "databricks"]
+  },
+  {
+    "canonical": "xAI",
+    "aliases": ["x.AI", "X.AI Corp.", "xai"]
+  },
+  {
+    "canonical": "ElevenLabs",
+    "aliases": ["ElevenLabs Inc.", "11Labs", "elevenlabs"]
+  },
+  {
+    "canonical": "Groq",
+    "aliases": ["Groq, Inc.", "Groq AI", "groq"]
+  },
+  {
+    "canonical": "Cerebras Systems",
+    "aliases": ["Cerebras", "Cerebras Systems Inc.", "cerebras"]
+  },
+  {
+    "canonical": "SambaNova Systems",
+    "aliases": ["SambaNova", "SambaNova Systems, Inc.", "sambanova"]
+  },
+  {
+    "canonical": "Character.AI",
+    "aliases": ["Character AI", "Character Technologies", "character.ai"]
+  },
+  {
+    "canonical": "Inflection AI",
+    "aliases": ["Inflection", "Inflection AI, Inc.", "inflection"]
+  },
+  {
+    "canonical": "AI21 Labs",
+    "aliases": ["AI21", "AI21 Labs Ltd", "ai21"]
+  },
+  {
+    "canonical": "DeepL",
+    "aliases": ["DeepL SE", "DeepL GmbH", "deepl"]
+  },
+  {
+    "canonical": "Synthesia",
+    "aliases": ["Synthesia Limited", "Synthesia AI", "synthesia"]
+  },
+  {
+    "canonical": "HeyGen",
+    "aliases": ["HeyGen Inc.", "Hey Gen", "heygen"]
+  },
+  {
+    "canonical": "Suno",
+    "aliases": ["Suno AI", "Suno, Inc.", "suno"]
+  },
+  {
+    "canonical": "Glean",
+    "aliases": ["Glean Technologies", "Glean Technologies, Inc.", "glean"]
+  },
+  {
+    "canonical": "Harvey",
+    "aliases": ["Harvey AI",  "harvey"]
+  },
+  {
+    "canonical": "Writer",
+    "aliases": ["Writer, Inc.", "Writer AI", "writer"]
+  },
+  {
+    "canonical": "Jasper",
+    "aliases": ["Jasper AI", "Jasper AI, Inc.", "jasper"]
+  },
+  {
+    "canonical": "Weights & Biases",
+    "aliases": ["W&B", "Weights and Biases", "wandb"]
+  },
+  {
+    "canonical": "Pinecone",
+    "aliases": ["Pinecone Systems", "Pinecone Systems, Inc.", "pinecone"]
+  },
+  {
+    "canonical": "Weaviate",
+    "aliases": ["Weaviate B.V.", "Weaviate Inc.", "weaviate"]
+  },
+  {
+    "canonical": "Qdrant",
+    "aliases": ["Qdrant Solutions", "Qdrant Solutions GmbH", "qdrant"]
+  },
+  {
+    "canonical": "LangChain",
+    "aliases": ["LangChain, Inc.", "Lang Chain", "langchain"]
+  },
+  {
+    "canonical": "LlamaIndex",
+    "aliases": ["LlamaIndex, Inc.", "Llama Index", "llamaindex"]
+  },
+  {
+    "canonical": "Replicate",
+    "aliases": ["Replicate, Inc.", "Replicate AI", "replicate"]
+  },
+  {
+    "canonical": "Together AI",
+    "aliases": ["Together Computer", "Together Computer, Inc.", "togetherai"]
+  },
+  {
+    "canonical": "Fireworks AI",
+    "aliases": [ "Fireworks AI, Inc.", "fireworks"]
+  },
+  {
+    "canonical": "Anyscale",
+    "aliases": ["Anyscale, Inc.", "Any Scale", "anyscale"]
+  },
+  {
+    "canonical": "Snorkel AI",
+    "aliases": ["Snorkel", "Snorkel AI, Inc.", "snorkel"]
+  },
+  {
+    "canonical": "Labelbox",
+    "aliases": ["Labelbox, Inc.", "Label Box", "labelbox"]
+  },
+  {
+    "canonical": "DataRobot",
+    "aliases": ["DataRobot, Inc.", "Data Robot", "datarobot"]
+  },
+  {
+    "canonical": "H2O.ai",
+    "aliases": ["H2O", "H2O.ai, Inc.", "h2oai"]
+  },
+  {
+    "canonical": "Wayve",
+    "aliases": ["Wayve Technologies", "Wayve Technologies Ltd", "wayve"]
+  },
+  {
+    "canonical": "Figure AI",
+    "aliases": [ "Figure AI, Inc.", "figureai"]
+  },
+  {
+    "canonical": "Sakana AI",
+    "aliases": ["Sakana", "Sakana AI K.K.", "sakana"]
+  },
+  {
+    "canonical": "Safe Superintelligence",
+    "aliases": [ "Safe Superintelligence Inc.", "ssi.inc"]
+  },
+  {
+    "canonical": "Cognition",
+    "aliases": ["Cognition AI", "Cognition Labs", "Cognition AI, Inc."]
+  },
+  {
+    "canonical": "Luma AI",
+    "aliases": ["Luma Labs", "Luma AI, Inc.", "lumaai"]
+  },
+  {
+    "canonical": "AssemblyAI",
+    "aliases": ["AssemblyAI, Inc.", "Assembly AI", "assemblyai"]
+  },
+  {
+    "canonical": "Deepgram",
+    "aliases": ["Deepgram, Inc.", "Deep Gram", "deepgram"]
+  },
+  {
+    "canonical": "Twelve Labs",
+    "aliases": ["Twelve Labs, Inc.", "TwelveLabs", "twelvelabs"]
+  }
+]
