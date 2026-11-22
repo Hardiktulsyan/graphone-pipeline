@@ -25,8 +25,8 @@ NEWS_FEEDS = [
         "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
     },
     {
-        "name": "MarkTechPost",
-        "url": "https://www.marktechpost.com/feed/",
+        "name": "Ars Technica AI",
+        "url": "https://arstechnica.com/ai/feed/",
     },
     {
         "name": "MIT Technology Review AI",
