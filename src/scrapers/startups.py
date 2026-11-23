@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 YC_COMPANIES_URL = "https://yc-oss.github.io/api/companies/all.json"
 
 # Maximum number of startup records to keep.
-MAX_RECORDS = 1500
+MAX_RECORDS = 2200
 
 # Exact AI-related tags required to keep a company.
 AI_TAGS = {
