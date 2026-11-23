@@ -19,15 +19,19 @@ from src.utils.retry import fetch_with_retry
 # Create a module-level logger.
 logger = get_logger(__name__)
 
-# Input and output file paths.
+# Input, output, and temporary atomic-save file paths.
 INPUT_STARTUPS_PATH = os.path.join("output", "startups.json")
 OUTPUT_PRODUCTS_PATH = os.path.join("output", "products.json")
+OUTPUT_PRODUCTS_TMP_PATH = os.path.join("output", "products.tmp.json")
 
 # User-Agent header sent on all website requests.
 USER_AGENT = "graphone-pipeline-trial/1.0"
 
 # Number of startups processed per checkpoint batch.
-SAVE_BATCH_SIZE = 100
+SAVE_BATCH_SIZE = 50
+
+# Maximum time in seconds allowed to process one startup before skipping it.
+STARTUP_TIMEOUT_SECONDS = 45
 
 # Maximum length for pricingEvidence snippets taken from original page text.
 EVIDENCE_MAX_CHARS = 200
@@ -450,7 +454,6 @@ async def fetch_html_page(session: aiohttp.ClientSession, url: str):
 # Process one startup record: fetch pages, run rules, optionally call LLM, and build PRODUCT record.
 async def process_single_startup(
     session: aiohttp.ClientSession,
-    semaphore: asyncio.Semaphore,
     llm_lock: asyncio.Lock,
     llm_state: dict,
     startup: dict,
@@ -476,91 +479,89 @@ async def process_single_startup(
     homepage_url = website
     pricing_url = homepage_url.rstrip("/") + "/pricing"
 
-    # Limit concurrent network calls using the shared semaphore.
-    async with semaphore:
-        # Step 1: Fetch the homepage, then fetch website + "/pricing".
-        homepage_html = await fetch_html_page(session, homepage_url)
-        pricing_html = await fetch_html_page(session, pricing_url)
+    # Step 1: Fetch the homepage, then fetch website + "/pricing".
+    homepage_html = await fetch_html_page(session, homepage_url)
+    pricing_html = await fetch_html_page(session, pricing_url)
 
-        # Step 2: Skip if both pages failed.
-        if homepage_html is None and pricing_html is None:
-            return {"status": "skipped", "reason": "no_page", "record": None}
+    # Step 2: Skip if both pages failed.
+    if homepage_html is None and pricing_html is None:
+        return {"status": "skipped", "reason": "no_page", "record": None}
 
-        # Step 3: Prefer the pricing page when fetched, otherwise use the homepage.
-        if pricing_html is not None:
-            chosen_html = pricing_html
-            chosen_url = pricing_url
-            is_pricing_page = True
-        else:
-            chosen_html = homepage_html
-            chosen_url = homepage_url
-            is_pricing_page = False
+    # Step 3: Prefer the pricing page when fetched, otherwise use the homepage.
+    if pricing_html is not None:
+        chosen_html = pricing_html
+        chosen_url = pricing_url
+        is_pricing_page = True
+    else:
+        chosen_html = homepage_html
+        chosen_url = homepage_url
+        is_pricing_page = False
 
-        # Step 4: Clean and prepare text using prepare_text.
-        page_text, was_truncated = prepare_text(chosen_html)
+    # Step 4: Clean and prepare text using prepare_text.
+    page_text, was_truncated = prepare_text(chosen_html)
 
-        # Step 5: Apply deterministic pricing rules first.
-        pricing_model, pricing_evidence, needs_llm, has_billing_price = (
-            apply_pricing_rules(page_text, is_pricing_page)
-        )
-        pricing_method = "none"
+    # Step 5: Apply deterministic pricing rules first.
+    pricing_model, pricing_evidence, needs_llm, has_billing_price = (
+        apply_pricing_rules(page_text, is_pricing_page)
+    )
+    pricing_method = "none"
 
-        if pricing_model is not None:
-            pricing_method = "rule"
-        elif needs_llm:
-            # Reserve an LLM call slot under the lock if the limit has not been reached.
-            can_call_llm = False
-            async with llm_lock:
-                if llm_state["calls_used"] < llm_state["llm_limit"]:
-                    llm_state["calls_used"] += 1
-                    can_call_llm = True
+    if pricing_model is not None:
+        pricing_method = "rule"
+    elif needs_llm:
+        # Reserve an LLM call slot under the lock if the limit has not been reached.
+        can_call_llm = False
+        async with llm_lock:
+            if llm_state["calls_used"] < llm_state["llm_limit"]:
+                llm_state["calls_used"] += 1
+                can_call_llm = True
 
-            # Call extract_json only if within the LLM call limit.
-            if can_call_llm:
-                values, evidence, provider, trace = await extract_json(
-                    session,
-                    page_text,
-                    PRICING_LLM_FIELDS,
+        # Call extract_json only if within the LLM call limit.
+        if can_call_llm:
+            values, evidence, provider, trace = await extract_json(
+                session,
+                page_text,
+                PRICING_LLM_FIELDS,
+            )
+            raw_model = values.get("pricing_model")
+            raw_evidence = evidence.get("pricing_model")
+
+            # Validate the LLM output using the trimmed 200-char snippet and evidence_supports.
+            if (
+                isinstance(raw_model, str)
+                and raw_model.strip().upper() in VALID_PRICING_MODELS
+                and isinstance(raw_evidence, str)
+                and raw_evidence.strip() != ""
+            ):
+                candidate_model = raw_model.strip().upper()
+                candidate_snippet = trim_llm_evidence(
+                    raw_evidence,
+                    EVIDENCE_MAX_CHARS,
                 )
-                raw_model = values.get("pricing_model")
-                raw_evidence = evidence.get("pricing_model")
 
-                # Validate the LLM output using the trimmed 200-char snippet and evidence_supports.
-                if (
-                    isinstance(raw_model, str)
-                    and raw_model.strip().upper() in VALID_PRICING_MODELS
-                    and isinstance(raw_evidence, str)
-                    and raw_evidence.strip() != ""
+                # Reject PAID or FREEMIUM from homepage alone without a billing period price.
+                homepage_blocked = (
+                    not is_pricing_page
+                    and candidate_model in ("PAID", "FREEMIUM")
+                    and not has_billing_price
+                )
+
+                # Accept only if not homepage-blocked and evidence_supports passes on the snippet.
+                if not homepage_blocked and evidence_supports(
+                    candidate_model,
+                    candidate_snippet,
                 ):
-                    candidate_model = raw_model.strip().upper()
-                    candidate_snippet = trim_llm_evidence(
-                        raw_evidence,
-                        EVIDENCE_MAX_CHARS,
-                    )
-
-                    # Reject PAID or FREEMIUM from homepage alone without a billing period price.
-                    homepage_blocked = (
-                        not is_pricing_page
-                        and candidate_model in ("PAID", "FREEMIUM")
-                        and not has_billing_price
-                    )
-
-                    # Accept only if not homepage-blocked and evidence_supports passes on the snippet.
-                    if not homepage_blocked and evidence_supports(
-                        candidate_model,
-                        candidate_snippet,
-                    ):
-                        pricing_model = candidate_model
-                        pricing_evidence = candidate_snippet
-                        pricing_method = "llm"
-                    else:
-                        pricing_model = None
-                        pricing_evidence = None
-                        pricing_method = "none"
+                    pricing_model = candidate_model
+                    pricing_evidence = candidate_snippet
+                    pricing_method = "llm"
                 else:
                     pricing_model = None
                     pricing_evidence = None
                     pricing_method = "none"
+            else:
+                pricing_model = None
+                pricing_evidence = None
+                pricing_method = "none"
 
     # Step 6: Build the PRODUCT record with ISO-8601 UTC collectedAt.
     collected_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -583,16 +584,69 @@ async def process_single_startup(
     return {"status": "saved", "reason": None, "record": record}
 
 
-# Save a Python object to a JSON file, creating the output folder if needed.
-def save_json_file(file_path: str, data):
+# Run process_single_startup under the concurrency semaphore with a 45 second timeout.
+async def process_startup_with_timeout(
+    session: aiohttp.ClientSession,
+    semaphore: asyncio.Semaphore,
+    llm_lock: asyncio.Lock,
+    llm_state: dict,
+    startup: dict,
+) -> dict:
+    # Acquire the semaphore first so queue wait time does not count against the 45 second limit.
+    async with semaphore:
+        try:
+            return await asyncio.wait_for(
+                process_single_startup(session, llm_lock, llm_state, startup),
+                timeout=STARTUP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            entity_name = None
+            content = startup.get("content")
+            if isinstance(content, dict):
+                entity_name = content.get("entityName")
+            logger.warning(
+                "Timed out after %d seconds while processing startup: %s",
+                STARTUP_TIMEOUT_SECONDS,
+                entity_name,
+            )
+            return {"status": "skipped", "reason": "timeout", "record": None}
+
+
+# Save records atomically by writing output/products.tmp.json and replacing output/products.json.
+def save_products_atomic(data):
     # Create the parent directory if it does not exist.
-    parent_dir = os.path.dirname(file_path)
+    parent_dir = os.path.dirname(OUTPUT_PRODUCTS_PATH)
     if parent_dir != "":
         os.makedirs(parent_dir, exist_ok=True)
 
-    # Write formatted JSON to disk.
-    with open(file_path, "w", encoding="utf-8") as file:
+    # Write formatted JSON to the temporary file first.
+    with open(OUTPUT_PRODUCTS_TMP_PATH, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2, ensure_ascii=False)
+
+    # Atomically replace the final output file with the temporary file.
+    os.replace(OUTPUT_PRODUCTS_TMP_PATH, OUTPUT_PRODUCTS_PATH)
+
+
+# Load existing product records from output/products.json if the file exists and loads cleanly.
+def load_existing_products(file_path: str) -> list:
+    # Return an empty list if no previous output file exists.
+    if not os.path.exists(file_path):
+        return []
+
+    # Try loading the existing JSON list; start fresh if unreadable or invalid.
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning("Could not load existing %s (%s). Starting with empty list.", file_path, error)
+        return []
+
+    if not isinstance(data, list):
+        logger.warning("Existing %s is not a list. Starting with empty list.", file_path)
+        return []
+
+    logger.info("Loaded %d existing product records from %s.", len(data), file_path)
+    return data
 
 
 # Load startup records from output/startups.json.
@@ -613,16 +667,23 @@ def load_startups(file_path: str) -> list:
     return data
 
 
-# Scrape product pricing for startups in batches of 100 and save checkpoints to disk.
-async def scrape_products(limit, llm_limit: int) -> tuple:
+# Scrape product pricing for startups in batches of 50 and save atomic checkpoints to disk.
+async def scrape_products(start: int, limit, llm_limit: int) -> tuple:
     # Load all startups from output/startups.json.
     startups = load_startups(INPUT_STARTUPS_PATH)
+
+    # Slice from --start index onward.
+    if start > 0:
+        startups = startups[start:]
 
     # Apply --limit if provided.
     if limit is not None and limit >= 0:
         startups = startups[:limit]
 
-    # Initialize concurrency semaphore, LLM call tracker, and summary counters.
+    # Keep any existing records from output/products.json and append new ones after them.
+    all_records = load_existing_products(OUTPUT_PRODUCTS_PATH)
+
+    # Initialize concurrency semaphore, LLM call tracker, and summary counters for this run.
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     llm_lock = asyncio.Lock()
     llm_state = {
@@ -630,11 +691,12 @@ async def scrape_products(limit, llm_limit: int) -> tuple:
         "llm_limit": llm_limit,
     }
 
-    all_records = []
     startups_processed = 0
+    records_saved_this_run = 0
     skipped_by_reason = {
         "no_website": 0,
         "no_page": 0,
+        "timeout": 0,
     }
     counts_by_method = {
         "rule": 0,
@@ -652,17 +714,17 @@ async def scrape_products(limit, llm_limit: int) -> tuple:
     # Open a shared aiohttp session with the required User-Agent header.
     headers = {"User-Agent": USER_AGENT}
     async with aiohttp.ClientSession(headers=headers) as session:
-        # Process startups in batches of 100 so we save progress every 100 startups.
+        # Process startups in batches of 50 so we save progress every 50 startups.
         total_startups = len(startups)
         for batch_start in range(0, total_startups, SAVE_BATCH_SIZE):
             batch_end = batch_start + SAVE_BATCH_SIZE
             batch = startups[batch_start:batch_end]
 
-            # Run all startups in this batch concurrently with asyncio.gather.
+            # Run all startups in this batch concurrently with a 45 second timeout per startup.
             tasks = []
             for startup in batch:
                 tasks.append(
-                    process_single_startup(
+                    process_startup_with_timeout(
                         session,
                         semaphore,
                         llm_lock,
@@ -685,6 +747,7 @@ async def scrape_products(limit, llm_limit: int) -> tuple:
 
                 record = result["record"]
                 all_records.append(record)
+                records_saved_this_run += 1
 
                 # Count by pricingMethod.
                 method = record["content"]["pricingMethod"]
@@ -701,22 +764,23 @@ async def scrape_products(limit, llm_limit: int) -> tuple:
                     counts_by_model[model_key] = 0
                 counts_by_model[model_key] += 1
 
-            # Save a checkpoint after every 100 startups.
-            save_json_file(OUTPUT_PRODUCTS_PATH, all_records)
+            # Atomically save a checkpoint after every 50 startups.
+            save_products_atomic(all_records)
             logger.info(
-                "Checkpoint saved: processed %d/%d startups, saved %d product records.",
+                "Checkpoint saved: processed %d/%d startups in this run, total product records=%d.",
                 startups_processed,
                 total_startups,
                 len(all_records),
             )
 
-    # Save the final output file at the end.
-    save_json_file(OUTPUT_PRODUCTS_PATH, all_records)
+    # Atomically save the final output file at the end.
+    save_products_atomic(all_records)
 
     # Return all saved records and the summary statistics dictionary.
     summary = {
         "startups_processed": startups_processed,
-        "records_saved": len(all_records),
+        "records_saved": records_saved_this_run,
+        "total_records": len(all_records),
         "skipped_by_reason": skipped_by_reason,
         "counts_by_method": counts_by_method,
         "counts_by_model": counts_by_model,
@@ -725,17 +789,23 @@ async def scrape_products(limit, llm_limit: int) -> tuple:
     return all_records, summary
 
 
-# Parse command-line arguments --limit and --llm-limit.
+# Parse command-line arguments --start, --limit, and --llm-limit.
 def parse_args():
     # Set up a basic argument parser.
     parser = argparse.ArgumentParser(
         description="Scrape startup websites and extract product pricing models."
     )
     parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Start processing startups from index N onward (default: 0).",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Only process the first N startups (default: all).",
+        help="Only process the first N startups from the start index (default: all).",
     )
     parser.add_argument(
         "--llm-limit",
@@ -752,11 +822,12 @@ async def main():
     args = parse_args()
 
     # Run the scraper.
-    records, summary = await scrape_products(args.limit, args.llm_limit)
+    records, summary = await scrape_products(args.start, args.limit, args.llm_limit)
 
-    # Log all summary statistics.
-    logger.info("Startups processed: %d", summary["startups_processed"])
-    logger.info("Records saved: %d", summary["records_saved"])
+    # Log all summary statistics, including total product records across all runs.
+    logger.info("Startups processed this run: %d", summary["startups_processed"])
+    logger.info("Records saved this run: %d", summary["records_saved"])
+    logger.info("Total product records: %d", summary["total_records"])
     logger.info("Skipped by reason: %s", summary["skipped_by_reason"])
     logger.info("Counts by method: %s", summary["counts_by_method"])
     logger.info("Counts by pricing model: %s", summary["counts_by_model"])
