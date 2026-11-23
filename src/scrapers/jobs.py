@@ -1,4 +1,5 @@
-# Standard library imports for async tasks, timestamps, JSON, paths, regex, and XML parsing.
+# Standard library imports for CLI args, async tasks, timestamps, JSON, paths, regex, and XML parsing.
+import argparse
 import asyncio
 from datetime import datetime, timezone
 import json
@@ -9,8 +10,9 @@ import xml.etree.ElementTree as ET
 # Third-party async HTTP library.
 import aiohttp
 
-# Project imports for entity resolution, date parsing, logging, and HTTP retries.
+# Project imports for entity resolution, seen URL tracking, date parsing, logging, and retries.
 from src.resolver.entity_resolver import EntityResolver
+from src.storage.seen_store import is_seen, mark_seen
 from src.utils.dates import is_within_24_hours, parse_date
 from src.utils.logger import get_logger
 from src.utils.retry import fetch_with_retry
@@ -211,13 +213,14 @@ def build_job_record(
     }
 
 
-# Build an empty result summary dictionary for a source.
+# Build a result summary dictionary for a source, including already_seen.
 def make_source_result(
     source_name: str,
     jobs_found: int,
     fresh: int,
     saved: int,
     skipped: int,
+    already_seen: int,
     records: list,
 ) -> dict:
     # Return the counts and records together.
@@ -227,6 +230,7 @@ def make_source_result(
         "fresh": fresh,
         "saved": saved,
         "skipped": skipped,
+        "already_seen": already_seen,
         "records": records,
     }
 
@@ -237,6 +241,7 @@ async def scrape_remoteok(
     resolver: EntityResolver,
     now: datetime,
     collected_at: str,
+    ignore_seen: bool = False,
 ) -> dict:
     # Initialize counters and record storage.
     source_name = "RemoteOK"
@@ -244,6 +249,7 @@ async def scrape_remoteok(
     fresh = 0
     saved = 0
     skipped = 0
+    already_seen = 0
     records = []
 
     # Wrap the entire source so any error never stops other sources.
@@ -255,7 +261,7 @@ async def scrape_remoteok(
         # Confirm the response is a list with at least one job after the legal notice.
         if not isinstance(data, list) or len(data) <= 1:
             logger.warning("No usable job list returned from %s", source_name)
-            return make_source_result(source_name, 0, 0, 0, 0, [])
+            return make_source_result(source_name, 0, 0, 0, 0, 0, [])
 
         # Skip the first item because it is a legal notice.
         job_items = data[1:]
@@ -284,20 +290,25 @@ async def scrape_remoteok(
 
             fresh += 1
 
+            # Read the posting URL and check seen_store before saving.
+            job_url = clean_string(item.get("url"))
+            if job_url is None:
+                job_url = clean_string(item.get("apply_url"))
+
+            if not ignore_seen and job_url is not None and is_seen(job_url):
+                already_seen += 1
+                continue
+
             # Resolve the company name through EntityResolver.
             raw_company = clean_string(item.get("company"))
             company = None
             if raw_company is not None:
                 company = resolver.resolve(raw_company)
 
-            # Read title and posting URL without inventing values.
+            # Read title without inventing values.
             title = clean_string(item.get("position"))
             if title is None:
                 title = clean_string(item.get("title"))
-
-            job_url = clean_string(item.get("url"))
-            if job_url is None:
-                job_url = clean_string(item.get("apply_url"))
 
             # Build and save the job record.
             record = build_job_record(
@@ -312,11 +323,23 @@ async def scrape_remoteok(
             records.append(record)
             saved += 1
 
+            # Mark the job URL as seen after saving it.
+            if job_url is not None:
+                mark_seen(job_url)
+
     except Exception as error:
         logger.error("Error scraping %s: %s", source_name, error)
 
     # Return summary counts and collected records.
-    return make_source_result(source_name, jobs_found, fresh, saved, skipped, records)
+    return make_source_result(
+        source_name,
+        jobs_found,
+        fresh,
+        saved,
+        skipped,
+        already_seen,
+        records,
+    )
 
 
 # Source 2: Scrape AI jobs from the Remotive API.
@@ -325,6 +348,7 @@ async def scrape_remotive(
     resolver: EntityResolver,
     now: datetime,
     collected_at: str,
+    ignore_seen: bool = False,
 ) -> dict:
     # Initialize counters and record storage.
     source_name = "Remotive"
@@ -332,6 +356,7 @@ async def scrape_remotive(
     fresh = 0
     saved = 0
     skipped = 0
+    already_seen = 0
     records = []
 
     # Wrap the entire source so any error never stops other sources.
@@ -343,7 +368,7 @@ async def scrape_remotive(
         # Confirm the response is a dictionary containing a jobs list.
         if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
             logger.warning("No usable job list returned from %s", source_name)
-            return make_source_result(source_name, 0, 0, 0, 0, [])
+            return make_source_result(source_name, 0, 0, 0, 0, 0, [])
 
         # Process each job entry.
         for item in data["jobs"]:
@@ -365,6 +390,12 @@ async def scrape_remotive(
 
             fresh += 1
 
+            # Read the posting URL and check seen_store before saving.
+            job_url = clean_string(item.get("url"))
+            if not ignore_seen and job_url is not None and is_seen(job_url):
+                already_seen += 1
+                continue
+
             # Resolve the company name through EntityResolver.
             raw_company = clean_string(item.get("company_name"))
             if raw_company is None:
@@ -373,9 +404,8 @@ async def scrape_remotive(
             if raw_company is not None:
                 company = resolver.resolve(raw_company)
 
-            # Read title and posting URL.
+            # Read title.
             title = clean_string(item.get("title"))
-            job_url = clean_string(item.get("url"))
 
             # Build and save the job record.
             record = build_job_record(
@@ -390,11 +420,23 @@ async def scrape_remotive(
             records.append(record)
             saved += 1
 
+            # Mark the job URL as seen after saving it.
+            if job_url is not None:
+                mark_seen(job_url)
+
     except Exception as error:
         logger.error("Error scraping %s: %s", source_name, error)
 
     # Return summary counts and collected records.
-    return make_source_result(source_name, jobs_found, fresh, saved, skipped, records)
+    return make_source_result(
+        source_name,
+        jobs_found,
+        fresh,
+        saved,
+        skipped,
+        already_seen,
+        records,
+    )
 
 
 # Remove an XML namespace prefix if present on a tag name.
@@ -411,6 +453,7 @@ async def scrape_weworkremotely(
     resolver: EntityResolver,
     now: datetime,
     collected_at: str,
+    ignore_seen: bool = False,
 ) -> dict:
     # Initialize counters and record storage.
     source_name = "We Work Remotely"
@@ -418,6 +461,7 @@ async def scrape_weworkremotely(
     fresh = 0
     saved = 0
     skipped = 0
+    already_seen = 0
     records = []
 
     # Wrap the entire source so any error never stops other sources.
@@ -428,7 +472,7 @@ async def scrape_weworkremotely(
         # Confirm we received non-empty XML text.
         if not isinstance(xml_text, str) or xml_text.strip() == "":
             logger.warning("No XML text returned from %s", source_name)
-            return make_source_result(source_name, 0, 0, 0, 0, [])
+            return make_source_result(source_name, 0, 0, 0, 0, 0, [])
 
         # Parse the RSS XML with ElementTree.
         root = ET.fromstring(xml_text.strip())
@@ -470,6 +514,11 @@ async def scrape_weworkremotely(
 
             fresh += 1
 
+            # Check seen_store before saving.
+            if not ignore_seen and job_url is not None and is_seen(job_url):
+                already_seen += 1
+                continue
+
             # Extract company from "Company: Role" title format if no company tag existed.
             title = raw_title
             if raw_company is None and raw_title is not None and ":" in raw_title:
@@ -495,11 +544,23 @@ async def scrape_weworkremotely(
             records.append(record)
             saved += 1
 
+            # Mark the job URL as seen after saving it.
+            if job_url is not None:
+                mark_seen(job_url)
+
     except Exception as error:
         logger.error("Error scraping %s: %s", source_name, error)
 
     # Return summary counts and collected records.
-    return make_source_result(source_name, jobs_found, fresh, saved, skipped, records)
+    return make_source_result(
+        source_name,
+        jobs_found,
+        fresh,
+        saved,
+        skipped,
+        already_seen,
+        records,
+    )
 
 
 # Source 4: Scrape jobs from all configured Greenhouse boards.
@@ -508,6 +569,7 @@ async def scrape_greenhouse(
     resolver: EntityResolver,
     now: datetime,
     collected_at: str,
+    ignore_seen: bool = False,
 ) -> dict:
     # Initialize counters and record storage.
     source_name = "Greenhouse"
@@ -515,6 +577,7 @@ async def scrape_greenhouse(
     fresh = 0
     saved = 0
     skipped = 0
+    already_seen = 0
     records = []
 
     # Wrap the entire source so any error never stops other sources.
@@ -560,6 +623,15 @@ async def scrape_greenhouse(
 
                 fresh += 1
 
+                # Read posting URL and check seen_store before saving.
+                job_url = clean_string(item.get("absolute_url"))
+                if job_url is None:
+                    job_url = clean_string(item.get("url"))
+
+                if not ignore_seen and job_url is not None and is_seen(job_url):
+                    already_seen += 1
+                    continue
+
                 # Determine is_remote from location text containing "remote".
                 is_remote = False
                 location_obj = item.get("location")
@@ -568,11 +640,8 @@ async def scrape_greenhouse(
                     if location_name is not None and "remote" in location_name.lower():
                         is_remote = True
 
-                # Read title and posting URL.
+                # Read title.
                 title = clean_string(item.get("title"))
-                job_url = clean_string(item.get("absolute_url"))
-                if job_url is None:
-                    job_url = clean_string(item.get("url"))
 
                 # Build and save the job record.
                 record = build_job_record(
@@ -587,11 +656,23 @@ async def scrape_greenhouse(
                 records.append(record)
                 saved += 1
 
+                # Mark the job URL as seen after saving it.
+                if job_url is not None:
+                    mark_seen(job_url)
+
     except Exception as error:
         logger.error("Error scraping %s: %s", source_name, error)
 
     # Return summary counts and collected records.
-    return make_source_result(source_name, jobs_found, fresh, saved, skipped, records)
+    return make_source_result(
+        source_name,
+        jobs_found,
+        fresh,
+        saved,
+        skipped,
+        already_seen,
+        records,
+    )
 
 
 # Determine whether a Lever job posting is remote.
@@ -624,6 +705,7 @@ async def scrape_lever(
     resolver: EntityResolver,
     now: datetime,
     collected_at: str,
+    ignore_seen: bool = False,
 ) -> dict:
     # Initialize counters and record storage.
     source_name = "Lever"
@@ -631,6 +713,7 @@ async def scrape_lever(
     fresh = 0
     saved = 0
     skipped = 0
+    already_seen = 0
     records = []
 
     # Wrap the entire source so any error never stops other sources.
@@ -671,17 +754,22 @@ async def scrape_lever(
 
                 fresh += 1
 
-                # Check remote status from workplaceType and location text.
-                is_remote = is_lever_job_remote(item)
-
-                # Read title and posting URL.
-                title = clean_string(item.get("text"))
-                if title is None:
-                    title = clean_string(item.get("title"))
-
+                # Read posting URL and check seen_store before saving.
                 job_url = clean_string(item.get("hostedUrl"))
                 if job_url is None:
                     job_url = clean_string(item.get("applyUrl"))
+
+                if not ignore_seen and job_url is not None and is_seen(job_url):
+                    already_seen += 1
+                    continue
+
+                # Check remote status from workplaceType and location text.
+                is_remote = is_lever_job_remote(item)
+
+                # Read title.
+                title = clean_string(item.get("text"))
+                if title is None:
+                    title = clean_string(item.get("title"))
 
                 # Build and save the job record.
                 record = build_job_record(
@@ -696,15 +784,27 @@ async def scrape_lever(
                 records.append(record)
                 saved += 1
 
+                # Mark the job URL as seen after saving it.
+                if job_url is not None:
+                    mark_seen(job_url)
+
     except Exception as error:
         logger.error("Error scraping %s: %s", source_name, error)
 
     # Return summary counts and collected records.
-    return make_source_result(source_name, jobs_found, fresh, saved, skipped, records)
+    return make_source_result(
+        source_name,
+        jobs_found,
+        fresh,
+        saved,
+        skipped,
+        already_seen,
+        records,
+    )
 
 
 # Run all 5 job scrapers concurrently and return combined records plus per-source stats.
-async def scrape_jobs(resolver: EntityResolver) -> tuple:
+async def scrape_jobs(resolver: EntityResolver, ignore_seen: bool = False) -> tuple:
     # Capture one UTC reference timestamp for the entire run.
     now = datetime.now(timezone.utc)
     collected_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -712,11 +812,11 @@ async def scrape_jobs(resolver: EntityResolver) -> tuple:
     # Open a shared async HTTP session and run all 5 sources at the same time.
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
-            scrape_remoteok(session, resolver, now, collected_at),
-            scrape_remotive(session, resolver, now, collected_at),
-            scrape_weworkremotely(session, resolver, now, collected_at),
-            scrape_greenhouse(session, resolver, now, collected_at),
-            scrape_lever(session, resolver, now, collected_at),
+            scrape_remoteok(session, resolver, now, collected_at, ignore_seen=ignore_seen),
+            scrape_remotive(session, resolver, now, collected_at, ignore_seen=ignore_seen),
+            scrape_weworkremotely(session, resolver, now, collected_at, ignore_seen=ignore_seen),
+            scrape_greenhouse(session, resolver, now, collected_at, ignore_seen=ignore_seen),
+            scrape_lever(session, resolver, now, collected_at, ignore_seen=ignore_seen),
         )
 
     # Combine all records and build the per-source statistics list.
@@ -733,6 +833,7 @@ async def scrape_jobs(resolver: EntityResolver) -> tuple:
                 "fresh": result["fresh"],
                 "saved": result["saved"],
                 "skipped": result["skipped"],
+                "already_seen": result["already_seen"],
             }
         )
 
@@ -752,27 +853,45 @@ def save_json_file(file_path: str, data):
         json.dump(data, file, indent=2, ensure_ascii=False)
 
 
+# Parse command-line arguments for the job scraper.
+def parse_args():
+    # Set up a basic argument parser with the --ignore-seen flag.
+    parser = argparse.ArgumentParser(
+        description="Scrape recent AI jobs from configured job boards and feeds."
+    )
+    parser.add_argument(
+        "--ignore-seen",
+        action="store_true",
+        help="Skip the is_seen check so already-seen job postings are saved again.",
+    )
+    return parser.parse_args()
+
+
 # Main entry point to run all 5 job scrapers, save outputs, and log summary stats.
 async def main():
+    # Parse command-line options.
+    args = parse_args()
+
     # Initialize the entity resolver.
     resolver = EntityResolver()
 
     # Run all 5 job sources concurrently.
-    records, source_stats = await scrape_jobs(resolver)
+    records, source_stats = await scrape_jobs(resolver, ignore_seen=args.ignore_seen)
 
     # Save the collected jobs and entity resolution log to the output folder.
     save_json_file(JOBS_OUTPUT_PATH, records)
     save_json_file(ENTITY_LOG_OUTPUT_PATH, resolver.get_log())
 
-    # Log summary counts for each source.
+    # Log summary counts for each source, including already_seen.
     for stats in source_stats:
         logger.info(
-            "Source=%s | jobs_found=%d | fresh=%d | saved=%d | skipped=%d",
+            "Source=%s | jobs_found=%d | fresh=%d | saved=%d | skipped=%d | already_seen=%d",
             stats["source_name"],
             stats["jobs_found"],
             stats["fresh"],
             stats["saved"],
             stats["skipped"],
+            stats["already_seen"],
         )
 
     # Log the first record if at least one job was saved.

@@ -1,4 +1,5 @@
-# Standard library imports for async tasks, timestamps, JSON, paths, regex, and XML parsing.
+# Standard library imports for CLI args, async tasks, timestamps, JSON, paths, regex, and XML parsing.
+import argparse
 import asyncio
 from datetime import datetime, timezone
 import json
@@ -10,7 +11,8 @@ import xml.etree.ElementTree as ET
 import aiohttp
 from bs4 import BeautifulSoup
 
-# Project imports for date parsing, logging, and HTTP retries.
+# Project imports for seen URL tracking, date parsing, logging, and HTTP retries.
+from src.storage.seen_store import is_seen, mark_seen
 from src.utils.dates import is_within_24_hours, parse_date
 from src.utils.logger import get_logger
 from src.utils.retry import fetch_with_retry
@@ -257,7 +259,12 @@ def extract_article_text(html_text: str) -> str:
 
 
 # Fetch, filter, and build NEWS records for a single feed.
-async def process_feed(session: aiohttp.ClientSession, feed: dict, now: datetime) -> dict:
+async def process_feed(
+    session: aiohttp.ClientSession,
+    feed: dict,
+    now: datetime,
+    ignore_seen: bool = False,
+) -> dict:
     # Read feed name and URL.
     feed_name = feed["name"]
     feed_url = feed["url"]
@@ -268,6 +275,7 @@ async def process_feed(session: aiohttp.ClientSession, feed: dict, now: datetime
     fresh_items = 0
     saved_items = 0
     skipped_items = 0
+    already_seen = 0
 
     # Fetch the raw XML text for the feed.
     logger.info("Fetching feed: %s (%s)", feed_name, feed_url)
@@ -282,6 +290,7 @@ async def process_feed(session: aiohttp.ClientSession, feed: dict, now: datetime
             "fresh_items": 0,
             "saved_items": 0,
             "skipped_items": 0,
+            "already_seen": 0,
             "records": [],
         }
 
@@ -292,7 +301,7 @@ async def process_feed(session: aiohttp.ClientSession, feed: dict, now: datetime
     # Record a single ISO-8601 UTC timestamp for collectedAt.
     collected_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Filter each item by date and fetch full article text for fresh items.
+    # Filter each item by date, check seen_store, and fetch full article text for fresh items.
     for item in items:
         raw_date = item.get("raw_date")
 
@@ -310,10 +319,15 @@ async def process_feed(session: aiohttp.ClientSession, feed: dict, now: datetime
         # Count this item as fresh.
         fresh_items += 1
 
-        # Require an article URL before fetching the page.
+        # Require an article URL before checking seen_store or fetching the page.
         article_url = item.get("url")
         if not isinstance(article_url, str) or article_url.strip() == "":
             skipped_items += 1
+            continue
+
+        # Skip the article if it was already seen (unless --ignore-seen is set).
+        if not ignore_seen and is_seen(article_url):
+            already_seen += 1
             continue
 
         # Fetch the full article HTML page.
@@ -347,6 +361,9 @@ async def process_feed(session: aiohttp.ClientSession, feed: dict, now: datetime
         records.append(record)
         saved_items += 1
 
+        # Mark the article URL as seen after saving it to the records.
+        mark_seen(article_url)
+
     # Return both the collected records and the summary counts for this feed.
     return {
         "feed_name": feed_name,
@@ -354,12 +371,13 @@ async def process_feed(session: aiohttp.ClientSession, feed: dict, now: datetime
         "fresh_items": fresh_items,
         "saved_items": saved_items,
         "skipped_items": skipped_items,
+        "already_seen": already_seen,
         "records": records,
     }
 
 
 # Scrape all configured news feeds concurrently and return records plus per-feed stats.
-async def scrape_news() -> tuple:
+async def scrape_news(ignore_seen: bool = False) -> tuple:
     # Capture one UTC reference timestamp for the entire run.
     now = datetime.now(timezone.utc)
 
@@ -367,7 +385,7 @@ async def scrape_news() -> tuple:
     async with aiohttp.ClientSession() as session:
         tasks = []
         for feed in NEWS_FEEDS:
-            tasks.append(process_feed(session, feed, now))
+            tasks.append(process_feed(session, feed, now, ignore_seen=ignore_seen))
         feed_results = await asyncio.gather(*tasks)
 
     # Combine all records and collect per-feed statistics.
@@ -384,6 +402,7 @@ async def scrape_news() -> tuple:
                 "fresh_items": result["fresh_items"],
                 "saved_items": result["saved_items"],
                 "skipped_items": result["skipped_items"],
+                "already_seen": result["already_seen"],
             }
         )
 
@@ -403,23 +422,41 @@ def save_json_file(file_path: str, data):
         json.dump(data, file, indent=2, ensure_ascii=False)
 
 
+# Parse command-line arguments for the news scraper.
+def parse_args():
+    # Set up a basic argument parser with the --ignore-seen flag.
+    parser = argparse.ArgumentParser(
+        description="Scrape recent AI news articles from configured RSS and Atom feeds."
+    )
+    parser.add_argument(
+        "--ignore-seen",
+        action="store_true",
+        help="Skip the is_seen check so already-seen articles are fetched again.",
+    )
+    return parser.parse_args()
+
+
 # Main entry point to run the news scraper, save output, and log summary stats.
 async def main():
+    # Parse command-line options.
+    args = parse_args()
+
     # Scrape all 5 feeds concurrently.
-    records, feed_stats = await scrape_news()
+    records, feed_stats = await scrape_news(ignore_seen=args.ignore_seen)
 
     # Save all collected news records to output/news.json.
     save_json_file(NEWS_OUTPUT_PATH, records)
 
-    # Log the counts for each feed.
+    # Log the counts for each feed, including already_seen.
     for stats in feed_stats:
         logger.info(
-            "Feed=%s | items_in_feed=%d | fresh_items=%d | saved_items=%d | skipped_items=%d",
+            "Feed=%s | items_in_feed=%d | fresh_items=%d | saved_items=%d | skipped_items=%d | already_seen=%d",
             stats["feed_name"],
             stats["items_in_feed"],
             stats["fresh_items"],
             stats["saved_items"],
             stats["skipped_items"],
+            stats["already_seen"],
         )
 
     # Log the first record's title and published date if at least one record was saved.
