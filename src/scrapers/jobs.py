@@ -29,13 +29,15 @@ GREENHOUSE_BOARDS = [
     "databricks",
     "scaleai",
     "togetherai",
-    "glean",
+    "figureai",
+    "stabilityai",
+    "labelbox",
+    "assemblyai",
 ]
 GREENHOUSE_URL_TEMPLATE = "https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
 
 # Lever board names to scrape.
 LEVER_BOARDS = [
-    "mistral",
     "palantir",
 ]
 LEVER_URL_TEMPLATE = "https://api.lever.co/v0/postings/{board}?mode=json"
