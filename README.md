@@ -32,3 +32,6 @@ The pipeline never tries to bypass blocks. When a site returns 403 or 429, the r
 
 ```bash
 python -m venv venv
+## Results
+
+Counts: Startups 1870, Products 1224, Research Papers 1200, Jobs 3, News 7, Entity Mapping Log 1891 rows.
